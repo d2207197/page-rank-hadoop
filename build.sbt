@@ -20,6 +20,8 @@ libraryDependencies += "ooyala.scamr" % "scamr_2.10" % "0.3.1-cdh4"
 
 libraryDependencies += "org.clapper" %% "grizzled-slf4j" % "1.0.1"
 
+libraryDependencies += "org.apache.hbase" % "hbase" % "0.94.18"
+
 // libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging-slf4j" % "2.1.2"
 
 libraryDependencies <+= (version) {
