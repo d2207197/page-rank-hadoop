@@ -18,6 +18,8 @@ import scamr.mapreduce.{MapReducePipeline, MapReduceJob, MapOnlyJob}
 import scamr.mapreduce.lib.{TextInputMapper, IdentityMapper}
 import java.io.{DataInput, DataOutput}
 
+import  org.apache.hadoop.mapred.Task.Counter.REDUCE_OUTPUT_RECORDS
+
 
 import grizzled.slf4j.Logging
 
@@ -247,6 +249,7 @@ object PageRankMapReduce extends MapReduceMain {
         if link.toString != ""
       } yield link).toArray
     } yield {
+      ctx._context.getCounter("pageRank", "titleCount").increment(1)
       linksArray.length match {
         case 0 =>
           println(s"empty title: $title")
@@ -268,7 +271,6 @@ object PageRankMapReduce extends MapReduceMain {
     input flatMap { item =>
       val (title, pageRankLinks) = item
       val (pageRank, links: Array[Text]) = (pageRankLinks.pageRank, pageRankLinks.links.toArray)
-      // ctx._context.getCounter("pageRank", "titleCount").increment(1)
 
       (title, new PageRankLinks(0, pageRankLinks.links)) :: {
         for (link <- links.toList)
@@ -282,15 +284,23 @@ object PageRankMapReduce extends MapReduceMain {
     } yield {
       // val numTitles = ctx._context.getCounter("pageRank", "titleCount").getValue
       val numTitles:Double = ctx._context.getConfiguration.get("numTitles").toInt
+
       val alpha = 0.15
       print(s"$title => " )
 
-      val (pageRank, links) = manyPageRankLinks.foldLeft(0: Double, new TextArrayWritable(Array[Text]()) ){ (pRLinksTuple, pRLinks) =>
+      val (prevPageRank, pageRank, links) = manyPageRankLinks.foldLeft(0: Double, 0: Double, new TextArrayWritable(Array[Text]()) ){
+        (pRLinksTuple, pRLinks) =>
         print(s" $pRLinks" )
-        (pRLinksTuple._1 + pRLinks.pageRank,
-          if (pRLinksTuple._2.get.length != 0) pRLinksTuple._2 else pRLinks.links )
+        if (pRLinks.links.get.length != 0)
+          (pRLinks.pageRank, pRLinksTuple._2, pRLinks.links)
+        else
+          (pRLinksTuple._1, pRLinksTuple._2 + pRLinks.pageRank, pRLinksTuple._3)
       }
       println()
+
+      ctx._context.getCounter("pageRank", "sumChange").increment( math.abs(pageRank - prevPageRank)*1000 toInt )
+
+
       (title, new PageRankLinks((alpha*(1/numTitles)+(1-alpha) * pageRank), links))
     }
 
@@ -301,6 +311,7 @@ object PageRankMapReduce extends MapReduceMain {
     } yield {
       (new DoubleAndTextWC(pageRankLinks.pageRank, title), NullWritable.get )
     }
+
   def sortPRReduce(input: Iterator[(DoubleAndTextWC, Iterator[NullWritable])], ctx: LambdaReduceContext): Iterator[(Text, DoubleWritable)] =
     for {
       (pageRankTitle, ignoredNull) <- input
@@ -315,6 +326,7 @@ object PageRankMapReduce extends MapReduceMain {
     val inputDirs = args.init
     val outputDir = args.last
 
+    // val numTitles = conf.get("numTitles").toInt
 
     val pipeline = MapReducePipeline.init(conf) -->
     new InputOutput.TextFileSource(inputDirs) -->
@@ -327,16 +339,25 @@ object PageRankMapReduce extends MapReduceMain {
     // new MapReduceJob(pageRankMap _, pageRankReduce _, "step 3: pageRank") -->
     // new InputOutput.TextFileSink[Text, PageRankLinks](s"$outputDir-graph")
     new InputOutput.SequenceFileSink[Text, PageRankLinks](s"$outputDir-0")
-    if ( pipeline.execute == false)
+    val (isSuccess, jobs ) = pipeline.execute
+    if ( isSuccess == false)
       return 1
+    val numTitles = jobs.head.getCounters.findCounter(REDUCE_OUTPUT_RECORDS).getValue
+    conf.set("numTitles", numTitles.toString)
+
+    println(s"\033[1;32mnumTitles = $numTitles\033[m")
 
     for (i <- 1 to 10) {
       val pipelinePR = MapReducePipeline.init(conf) -->
       new InputOutput.SequenceFileSource[Text, PageRankLinks](Array(s"$outputDir-${i-1}")) -->
       new MapReduceJob(pageRankMap _, pageRankReduce _, "step2: pageRank-$i") -->
       new InputOutput.SequenceFileSink[Text, PageRankLinks](s"$outputDir-$i")
-      if ( pipelinePR.execute == false)
+      val (isSuccess, jobs ) = pipelinePR.execute
+      if ( isSuccess == false)
         return 1
+
+      val avgChange = jobs.head.getCounters.findCounter("pageRank", "sumChange").getValue / numTitles.toDouble / 1000
+      println(s"\033[1;31mavgChange = $avgChange\033[m")
     }
 
     val pipelineSort = MapReducePipeline.init(conf) -->
@@ -345,7 +366,7 @@ object PageRankMapReduce extends MapReduceMain {
     LambdaJobModifier { job =>
       job.setSortComparatorClass(classOf[SortPRComparator])} -->
     new InputOutput.SequenceFileSink[Text, DoubleWritable](s"$outputDir-final")
-    if ( pipelineSort.execute == false)
+    if ( pipelineSort.execute._1 == false)
       return 1
     return 0
 
