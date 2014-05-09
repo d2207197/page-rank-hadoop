@@ -350,7 +350,7 @@ object PageRankMapReduce extends MapReduceMain {
     for (i <- 1 to 10) {
       val pipelinePR = MapReducePipeline.init(conf) -->
       new InputOutput.SequenceFileSource[Text, PageRankLinks](Array(s"$outputDir-${i-1}")) -->
-      new MapReduceJob(pageRankMap _, pageRankReduce _, "step2: pageRank-$i") -->
+      new MapReduceJob(pageRankMap _, pageRankReduce _, s"step2: pageRank-$i") -->
       new InputOutput.SequenceFileSink[Text, PageRankLinks](s"$outputDir-$i")
       val (isSuccess, jobs ) = pipelinePR.execute
       if ( isSuccess == false)
