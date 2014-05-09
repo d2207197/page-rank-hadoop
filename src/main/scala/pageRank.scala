@@ -312,11 +312,11 @@ object PageRankMapReduce extends MapReduceMain {
       (new DoubleAndTextWC(pageRankLinks.pageRank, title), NullWritable.get )
     }
 
-  def sortPRReduce(input: Iterator[(DoubleAndTextWC, Iterator[NullWritable])], ctx: LambdaReduceContext): Iterator[(Text, DoubleWritable)] =
+  def sortPRReduce(input: Iterator[(DoubleAndTextWC, Iterator[NullWritable])], ctx: LambdaReduceContext): Iterator[(Text, Text)] =
     for {
       (pageRankTitle, ignoredNull) <- input
     } yield {
-      (pageRankTitle._2, pageRankTitle._1)
+      (pageRankTitle._2, pageRankTitle._1.toString)
     }
 
 
@@ -347,7 +347,7 @@ object PageRankMapReduce extends MapReduceMain {
 
     println(s"\033[1;32mnumTitles = $numTitles\033[m")
 
-    for (i <- 1 to 10) {
+    (1 to 50).toStream map { i => 
       val pipelinePR = MapReducePipeline.init(conf) -->
       new InputOutput.SequenceFileSource[Text, PageRankLinks](Array(s"$outputDir-${i-1}")) -->
       new MapReduceJob(pageRankMap _, pageRankReduce _, s"step2: pageRank-$i") -->
@@ -355,17 +355,19 @@ object PageRankMapReduce extends MapReduceMain {
       val (isSuccess, jobs ) = pipelinePR.execute
       if ( isSuccess == false)
         return 1
-
       val avgChange = jobs.head.getCounters.findCounter("pageRank", "sumChange").getValue / numTitles.toDouble / 1000
-      println(s"\033[1;31mavgChange = $avgChange\033[m")
-    }
+      println(s"\033[1;31mPageRank $i iteration. avgChange = $avgChange\033[m")
+      (i, avgChange)
+    } takeWhile (x => x._1 < 10 || x._2 > 0.2) toList
+
+    println(s"\033[1;32mPageRank Sort\033[m")
 
     val pipelineSort = MapReducePipeline.init(conf) -->
     new InputOutput.SequenceFileSource[Text, PageRankLinks](Array(s"$outputDir-10")) -->
     new MapReduceJob(sortPRMap _, sortPRReduce _, "step3: sort pageRank") ++
     LambdaJobModifier { job =>
       job.setSortComparatorClass(classOf[SortPRComparator])} -->
-    new InputOutput.SequenceFileSink[Text, DoubleWritable](s"$outputDir-final")
+    new InputOutput.TextFileSink[Text, Text](s"$outputDir-final")
     if ( pipelineSort.execute._1 == false)
       return 1
     return 0

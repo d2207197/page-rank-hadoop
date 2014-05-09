@@ -68,11 +68,16 @@ class FirstKeyGroupComparator protected () extends WritableComparator(classOf[Te
 }
 
 
-class InvertedIndexReducer(context: ReduceContext[_,_,_,_]) extends SimpleReducer[TextPairWC, TermInfo, TextAndIntWC, ArrayBufferW[TermInfo]](context)  {
+class InvertedIndexReducer(context: ReduceContext[_,_,_,_]) extends SimpleReducer[TextPairWC, TermInfo, Text, Text](context)  {
 
-  override def reduce(termTitle: TextPairWC, termInfos: Iterator[TermInfo]): Unit = {
-    val termInfosArrayBW : ArrayBufferW[TermInfo]= new ArrayBufferW[TermInfo] ++= termInfos
-    emit(new TextAndIntWC(termTitle._1, termInfosArrayBW.size), termInfosArrayBW)
+  override def reduce(termTitle: TextPairWC, _termInfos: Iterator[TermInfo]): Unit = {
+    val termInfos = Vector() ++ _termInfos
+    val termInfos_str = termInfos map { ti =>
+      val ofs_tuple = ti.ofs mkString ("(", ",", ")")
+      s"${ti.title}#(${ti.tf},${ofs_tuple})"
+    } mkString ("[",",","]")
+
+    emit(termTitle._1, s"${termInfos.size}	${termInfos_str}")
   }
 }
 
@@ -94,7 +99,7 @@ object InvertedIndexMapReduce extends MapReduceMain {
     LambdaJobModifier { job =>
       job.setGroupingComparatorClass(classOf[FirstKeyGroupComparator])
       job.setPartitionerClass(classOf[TermPartitioner]) } -->
-    new InputOutput.TextFileSink[TextAndIntWC, ArrayBufferW[TermInfo]](s"$outputDir")
+    new InputOutput.TextFileSink[Text, Text](s"$outputDir")
     val (isSuccess, jobs) = pipeline.execute
     if (!isSuccess) return 1
 
