@@ -16,8 +16,8 @@ class TextAndIntWC(tuple: (Text, IntWritable)) extends Tuple2WritableComparable[
   def this() = this((new Text, new IntWritable))
 }
 
-class TermInfo(var title: String, var tf: Int, var ofs: ArrayBuffer[Long]) extends Writable {
-  def this() = this("", 0, ArrayBuffer[Long]())
+class TermInfo(var title: String, var tf: Int, var ofs: ArrayBuffer[Tuple2[Long, Long]]) extends Writable {
+  def this() = this("", 0, ArrayBuffer[Tuple2[Long, Long]]())
 
   override def toString: String =
     s"""TermInfo($title, $tf, [${ofs.mkString(", ")}])"""
@@ -30,30 +30,34 @@ class TermInfo(var title: String, var tf: Int, var ofs: ArrayBuffer[Long]) exten
 
     // if (ofs == null)
     //   ofs = Vector[Int]()
-    ofs = for (i <- ArrayBuffer.range(0, in.readInt)) yield in.readLong  
+    ofs = for (i <- ArrayBuffer.range(0, in.readInt)) yield (in.readLong, in.readLong)
   }
   override def write(out: DataOutput): Unit = {
     new Text(title).write(out)
     out.writeInt(tf)
 
     out.writeInt(ofs.size)
-    ofs foreach {out.writeLong(_)}
+    ofs foreach { of =>
+      out.writeLong(of._1)
+      out.writeLong(of._2)
+    }
   }
 }
 
 
-class ArrayBufferW[T <% Writable ](implicit m: scala.reflect.Manifest[T]) extends ArrayBuffer[T] with Writable {
-   def readFields(in: DataInput) {
-     this.clear
-     for (i <- 1 to in.readInt) {
-       val data = m.erasure.newInstance.asInstanceOf[T]
-       data.readFields(in)
-       this += data
-     }
+class TermInfoArray extends ArrayBuffer[TermInfo] with Writable {
+
+  def readFields(in: DataInput) {
+    this.clear
+    for (i <- 1 to in.readInt) {
+      val data = new TermInfo
+      data.readFields(in)
+      this += data
+    }
   }
   def write(out: DataOutput) {
     out.writeInt(this.size)
-    this foreach { data: T => data.write(out) }
+    this foreach { data: TermInfo => data.write(out) }
   }
 }
 // implicit def arrayBufferW[T <% Printable](a: ArrayBuffer[T]) = new PrintableArray(a)

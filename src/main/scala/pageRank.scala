@@ -18,11 +18,21 @@ import scamr.mapreduce.{MapReducePipeline, MapReduceJob, MapOnlyJob}
 import scamr.mapreduce.lib.{TextInputMapper, IdentityMapper}
 import java.io.{DataInput, DataOutput}
 
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.FileSystem
+
 import  org.apache.hadoop.mapred.Task.Counter.REDUCE_OUTPUT_RECORDS
 
 
-import grizzled.slf4j.Logging
+// import grizzled.slf4j.Logging
 
+
+import org.apache.hadoop.hbase.{HBaseConfiguration, HTableDescriptor, HColumnDescriptor}
+import org.apache.hadoop.hbase.client.{HBaseAdmin,HTable,Put,Get}
+import org.apache.hadoop.hbase.util.Bytes
+
+import org.apache.hadoop.io.SequenceFile
+import org.apache.hadoop.util.ReflectionUtils
 
 
 object WritableConversions2 {
@@ -71,62 +81,58 @@ class DoubleAndTextWC(tuple: (DoubleWritable, Text))
 }
 
 
-// t:1 -> l:2 l:3 l:4 l:5
+//// t1 -> l2 l3 l4 l5
 
-// l:2 -> t:1
-// l:3 -> t:1
-// l:4 -> t:1
-// l:5 -> t:1
-// " "l:2 -> ""
-// " "l:1 -> ""
-// " "l:1 -> ""
-// " "l:1 -> ""
-// " "l:1 -> ""
-// " NULL" -> t:1
+// l2 -> t1
+// l3 -> t1
+// l4 -> t1
+// l5 -> t1
+// " "t1 -> ""
+// "" -> t1
 
-// t:2 -> l:1 l:3 l:4
+//// t2 -> l1 l3 l4
 
-// l:1 -> t:2
-// l:3 -> t:2
-// l:4 -> t:2
-// " "t:2 -> ""
-// " NULL" -> t:2
+// l1 -> t2
+// l3 -> t2
+// l4 -> t2
+// " "t2 -> ""
+// "" -> t2
 
-// t:3 -> l:1 l:2 l:4
+//// t3 -> l1 l2 l4
 
-// l:1 -> t:3
-// l:3 -> t:3
-// l:4 -> t:3
-// " "t:3 -> ""
-// " NULL" -> t:3
+// l1 -> t3
+// l3 -> t3
+// l4 -> t3
+// " "t3 -> ""
+// "" -> t3
 
-// t:5 ->
-// " "t:5 -> ""
-// " NULL" -> t:5
+// t5 ->
+// " "t5 -> ""
+// "" -> t5
 
 
 // -------------------------
-// " "t:1 -> "", t:2, t:3
-// " "t:2 -> "", t:1, t:3
-// " "t:3 -> "", t:1, t:2
-// " "t:5 -> ""
-// l:4 -> t:1, t:2, t:3    # delete
-// " NULL" -> t:1, t:2, t:3, t:5
+// " "t1 -> "", t2, t3
+// " "t2 -> "", t1, t3
+// " "t3 -> "", t1, t2
+// " "t5 -> ""
+// l4 -> t1, t2, t3    # delete
+// "" -> t1, t2, t3, t5
 
 
 // ----------
-// t:2 -> l:1
-// NULL -> t:2
-// t:3 -> l:1
-// NULL -> t:3
-// t:1 -> t:2
-// t:1 -> NULL
+// t2 -> l1
+// NULL -> t2
+// t3 -> l1
+// NULL -> t3
+// t1 -> t2
+// t1 -> NULL
 
 
 
 
 
-class ExtractInfoMapper(context: MapContext[_, _, _, _]) extends TextInputMapper[Text, Text](context) with Logging {
+class ExtractInfoMapper(context: MapContext[_, _, _, _]) extends TextInputMapper[Text, Text](context)  {
   private val titlePattern = raw"""(?<=<title>)[^<]+(?=</title>)""".r
   private val linkPattern = raw"""(?<=\[\[)[^\]]+(?=\]\])""".r
 
@@ -142,7 +148,7 @@ class ExtractInfoMapper(context: MapContext[_, _, _, _]) extends TextInputMapper
         )
         emit(" " + titleTrimed, "")
         emit("", titleTrimed)
-      case None => warn("No Title Found: $offset")
+      case None => println("No Title Found: $offset")
     }
   }
 }
@@ -171,7 +177,7 @@ class LinkNameComparator protected () extends WritableComparator(classOf[Text], 
   }
 }
 
-class FilterLinksReducer(context: ReduceContext[_,_,_,_]) extends SimpleReducer[Text, Text, Text, Text](context) with Logging {
+class FilterLinksReducer(context: ReduceContext[_,_,_,_]) extends SimpleReducer[Text, Text, Text, Text](context)  {
 
   override def reduce(_link: Text, titles: Iterator[Text]): Unit = {
     println(s"""get ${_link}""")
@@ -323,8 +329,12 @@ object PageRankMapReduce extends MapReduceMain {
 
 
   override def run(conf: Configuration, args: Array[String]): Int = {
-    val inputDirs = args.init
-    val outputDir = args.last
+
+    conf.addResource(new Path("/etc/hadoop/conf.nlp/core-site.xml"));
+    conf.addResource(new Path("/etc/hbase/conf.dist/hbase-site.xml"))
+
+    val inputDirs = Array(args(0))
+    val outputDir = args(1)
 
     // val numTitles = conf.get("numTitles").toInt
 
@@ -347,7 +357,7 @@ object PageRankMapReduce extends MapReduceMain {
 
     println(s"\033[1;32mnumTitles = $numTitles\033[m")
 
-    for (i <- 1 to 10) {
+    (1 to 50).toStream map { i => 
       val pipelinePR = MapReducePipeline.init(conf) -->
       new InputOutput.SequenceFileSource[Text, PageRankLinks](Array(s"$outputDir-${i-1}")) -->
       new MapReduceJob(pageRankMap _, pageRankReduce _, s"step2: pageRank-$i") -->
@@ -355,10 +365,12 @@ object PageRankMapReduce extends MapReduceMain {
       val (isSuccess, jobs ) = pipelinePR.execute
       if ( isSuccess == false)
         return 1
-
       val avgChange = jobs.head.getCounters.findCounter("pageRank", "sumChange").getValue / numTitles.toDouble / 1000
-      println(s"\033[1;31mavgChange = $avgChange\033[m")
-    }
+      println(s"\033[1;31mPageRank $i iteration. avgChange = $avgChange\033[m")
+      (i, avgChange)
+    } takeWhile (x => x._1 < 10 || x._2 > 0.2) toList
+
+    println(s"\033[1;32mPageRank Sort\033[m")
 
     val pipelineSort = MapReducePipeline.init(conf) -->
     new InputOutput.SequenceFileSource[Text, PageRankLinks](Array(s"$outputDir-10")) -->
@@ -368,8 +380,9 @@ object PageRankMapReduce extends MapReduceMain {
     new InputOutput.SequenceFileSink[Text, DoubleWritable](s"$outputDir-final")
     if ( pipelineSort.execute._1 == false)
       return 1
-    return 0
 
+
+    return 0
 
     // hint: use ++ to add ConfModifiers or JobModifiers to a TaskStage or a StandAloneJob
     // ConfigureSpeculativeExecution(false, false) ++
@@ -381,3 +394,64 @@ object PageRankMapReduce extends MapReduceMain {
 }
 
 
+
+
+object PageRankWriteToHBase extends MapReduceMain {
+
+  override def run(conf: Configuration, args: Array[String]): Int = {
+
+    val outputDir = args(0)
+
+    val hbaseTblName = args(1)
+
+
+    val config = HBaseConfiguration.create(conf)
+    // config.set("hbase.master","localhost:60000")
+    // config.set("hbase.zookeeper.quorum", "nlp1.cs.nthu.edu.tw");
+    val hbase = new HBaseAdmin(config)
+
+
+    if (!hbase.tableExists(hbaseTblName)) {
+      println(s"hbase table doesn't exist, creating...: $hbaseTblName")
+      val mathTable = new HTableDescriptor(hbaseTblName)
+      val  gradeCol = new HColumnDescriptor("pr")
+      mathTable.addFamily(gradeCol)
+      hbase.createTable(mathTable)
+    }
+    else println(s"$hbaseTblName exist")
+
+    val hbaseTable = new HTable(config, hbaseTblName)
+
+    val fs = FileSystem.get(conf)
+    val path = new Path(outputDir)
+
+    var reader: SequenceFile.Reader = null
+    val inputFiles = fs.listStatus(path)
+    val filePaths = for {
+      fileStat <- inputFiles
+      filePath = fileStat.getPath
+      if filePath.getName startsWith "part"
+    } yield filePath
+    println(s"reading $filePaths")
+
+    for (filePath <- filePaths)
+    {
+      val reader = new SequenceFile.Reader(fs, filePath, conf)
+      var key = ReflectionUtils.newInstance(reader.getKeyClass, conf).asInstanceOf[Text]
+      var value = ReflectionUtils.newInstance(reader.getValueClass, conf).asInstanceOf[DoubleWritable]
+      var position = reader.getPosition
+      while (reader.next(key, value)) {
+        val syncSeen = if (reader.syncSeen()) "*" else ""
+        println(s"$position, $syncSeen, $key, $value")
+
+        position = reader.getPosition
+
+        val put_data = new Put(key.toString.getBytes)
+        put_data.add(Bytes.toBytes("pr"), Bytes.toBytes("pr"), Bytes.toBytes(value))
+        hbaseTable.put(put_data)
+      }
+      reader.close
+    }
+    0
+  }
+}
